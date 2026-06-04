@@ -1,0 +1,13 @@
+fastapi
+uvicorn
+sqlalchemy
+alembic
+asyncpg
+pydantic
+pydantic-settings
+python-jose
+passlib
+python-multipart
+cloudinary
+httpx
+python-dotenv
