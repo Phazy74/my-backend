@@ -8,347 +8,155 @@ import schemas
 import auth
 from database import engine, get_db
 
-# Create all tables on startup
 models.Base.metadata.create_all(bind=engine)
 
-app = FastAPI(
-    title="Deployment Teaching API",
-    description="A simple FastAPI app for learning deployment concepts.",
-    version="1.0.0",
-)
+app = FastAPI(title="Booking System API")
 
 
-# ── Health check ──────────────────────────────────────────────
+# ── HEALTH ─────────────────────────────
 
-@app.get("/", tags=["Health"])
+@app.get("/")
 def root():
-    return {"status": "ok", "message": "API is running!"}
+    return {"message": "Booking API running"}
 
 
-@app.get("/health", tags=["Health"])
-def health():
-    return {"status": "healthy"}
+# ── AUTH ───────────────────────────────
 
-
-# ── Auth routes ───────────────────────────────────────────────
-
-@app.post("/auth/register", response_model=schemas.UserOut, tags=["Auth"])
+@app.post("/auth/register", response_model=schemas.UserOut)
 def register(user_in: schemas.UserCreate, db: Session = Depends(get_db)):
-    """Register a new user."""
+
     if db.query(models.User).filter(models.User.username == user_in.username).first():
-        raise HTTPException(status_code=400, detail="Username already taken")
+        raise HTTPException(400, "Username already exists")
+
     if db.query(models.User).filter(models.User.email == user_in.email).first():
-        raise HTTPException(status_code=400, detail="Email already registered")
+        raise HTTPException(400, "Email already exists")
 
     user = models.User(
         username=user_in.username,
         email=user_in.email,
-        hashed_password=auth.hash_password(user_in.password),
+        hashed_password=auth.hash_password(user_in.password)
     )
+
     db.add(user)
     db.commit()
     db.refresh(user)
+
     return user
 
 
-@app.post("/auth/login", response_model=schemas.Token, tags=["Auth"])
+@app.post("/auth/login", response_model=schemas.Token)
 def login(form: OAuth2PasswordRequestForm = Depends(), db: Session = Depends(get_db)):
-    """Login and receive a JWT access token."""
+
     user = db.query(models.User).filter(models.User.username == form.username).first()
+
     if not user or not auth.verify_password(form.password, user.hashed_password):
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Invalid username or password",
-        )
+        raise HTTPException(status_code=401, detail="Invalid credentials")
+
     token = auth.create_access_token(
         data={"sub": user.username},
-        expires_delta=timedelta(minutes=auth.ACCESS_TOKEN_EXPIRE_MINUTES),
+        expires_delta=timedelta(minutes=30)
     )
-    return {"access_token": token, "token_type": "bearer"}
+
+    return {
+        "access_token": token,
+        "token_type": "bearer"
+    }
 
 
-# ── User routes ───────────────────────────────────────────────
+# ── USER ───────────────────────────────
 
-@app.get("/users/me", response_model=schemas.UserOut, tags=["Users"])
-def get_me(current_user: models.User = Depends(auth.get_current_user)):
-    """Get the currently authenticated user."""
+@app.get("/users/me")
+def get_me(current_user=Depends(auth.get_current_user)):
     return current_user
 
 
-# ── Item routes ───────────────────────────────────────────────
-
-@app.post("/items", response_model=schemas.ItemOut, tags=["Items"])
-def create_item(
-    item_in: schemas.ItemCreate,
+@app.delete("/users/{user_id}")
+def delete_user(
+    user_id: int,
     db: Session = Depends(get_db),
-    current_user: models.User = Depends(auth.get_current_user),
+    current_user=Depends(auth.get_current_user)
 ):
-    """Create an item owned by the current user."""
-    item = models.Item(**item_in.model_dump(), owner_id=current_user.id)
-    db.add(item)
+
+    user = db.query(models.User).filter(models.User.id == user_id).first()
+
+    if not user:
+        raise HTTPException(404, "User not found")
+
+    db.delete(user)
     db.commit()
-    db.refresh(item)
-    return item
+
+    return {"message": "User deleted"}
 
 
-@app.get("/items", response_model=list[schemas.ItemOut], tags=["Items"])
-def list_items(
+# ── BOOKINGS ───────────────────────────
+
+@app.post("/bookings", response_model=schemas.BookingOut)
+def create_booking(
+    booking_in: schemas.BookingCreate,
     db: Session = Depends(get_db),
-    current_user: models.User = Depends(auth.get_current_user),
+    current_user=Depends(auth.get_current_user)
 ):
-    """List all items belonging to the current user."""
-    return db.query(models.Item).filter(models.Item.owner_id == current_user.id).all()
+
+    booking = models.Booking(
+        customer_name=booking_in.customer_name,
+        service_name=booking_in.service_name,
+        booking_date=booking_in.booking_date,
+        notes=booking_in.notes,
+        owner_id=current_user.id
+    )
+
+    db.add(booking)
+    db.commit()
+    db.refresh(booking)
+
+    return booking
 
 
-@app.delete("/items/{item_id}", tags=["Items"])
-def delete_item(
-    item_id: int,
+@app.get("/bookings", response_model=list[schemas.BookingOut])
+def list_bookings(
     db: Session = Depends(get_db),
-    current_user: models.User = Depends(auth.get_current_user),
+    current_user=Depends(auth.get_current_user)
 ):
-    """Delete an item by ID (must be the owner)."""
-    item = db.query(models.Item).filter(
-        models.Item.id == item_id,
-        models.Item.owner_id == current_user.id,
+
+    return db.query(models.Booking).filter(
+        models.Booking.owner_id == current_user.id
+    ).all()
+
+
+@app.get("/bookings/{booking_id}", response_model=schemas.BookingOut)
+def get_booking(
+    booking_id: int,
+    db: Session = Depends(get_db),
+    current_user=Depends(auth.get_current_user)
+):
+
+    booking = db.query(models.Booking).filter(
+        models.Booking.id == booking_id,
+        models.Booking.owner_id == current_user.id
     ).first()
-    if not item:
-        raise HTTPException(status_code=404, detail="Item not found")
-    db.delete(item)
-    db.commit()
-    return {"detail": "Item deleted"}
-from fastapi import FastAPI, Depends, HTTPException, status
-from fastapi.security import OAuth2PasswordRequestForm
-from sqlalchemy.orm import Session
-from datetime import timedelta
 
-import models
-import schemas
-import auth
-from database import engine, get_db
+    if not booking:
+        raise HTTPException(404, "Booking not found")
 
-# Create all tables on startup
-models.Base.metadata.create_all(bind=engine)
-
-app = FastAPI(
-    title="Deployment Teaching API",
-    description="A simple FastAPI app for learning deployment concepts.",
-    version="1.0.0",
-)
+    return booking
 
 
-# ── Health check ──────────────────────────────────────────────
-
-@app.get("/", tags=["Health"])
-def root():
-    return {"status": "ok", "message": "API is running!"}
-
-
-@app.get("/health", tags=["Health"])
-def health():
-    return {"status": "healthy"}
-
-
-# ── Auth routes ───────────────────────────────────────────────
-
-@app.post("/auth/register", response_model=schemas.UserOut, tags=["Auth"])
-def register(user_in: schemas.UserCreate, db: Session = Depends(get_db)):
-    """Register a new user."""
-    if db.query(models.User).filter(models.User.username == user_in.username).first():
-        raise HTTPException(status_code=400, detail="Username already taken")
-    if db.query(models.User).filter(models.User.email == user_in.email).first():
-        raise HTTPException(status_code=400, detail="Email already registered")
-
-    user = models.User(
-        username=user_in.username,
-        email=user_in.email,
-        hashed_password=auth.hash_password(user_in.password),
-    )
-    db.add(user)
-    db.commit()
-    db.refresh(user)
-    return user
-
-
-@app.post("/auth/login", response_model=schemas.Token, tags=["Auth"])
-def login(form: OAuth2PasswordRequestForm = Depends(), db: Session = Depends(get_db)):
-    """Login and receive a JWT access token."""
-    user = db.query(models.User).filter(models.User.username == form.username).first()
-    if not user or not auth.verify_password(form.password, user.hashed_password):
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Invalid username or password",
-        )
-    token = auth.create_access_token(
-        data={"sub": user.username},
-        expires_delta=timedelta(minutes=auth.ACCESS_TOKEN_EXPIRE_MINUTES),
-    )
-    return {"access_token": token, "token_type": "bearer"}
-
-
-# ── User routes ───────────────────────────────────────────────
-
-@app.get("/users/me", response_model=schemas.UserOut, tags=["Users"])
-def get_me(current_user: models.User = Depends(auth.get_current_user)):
-    """Get the currently authenticated user."""
-    return current_user
-
-
-# ── Item routes ───────────────────────────────────────────────
-
-@app.post("/items", response_model=schemas.ItemOut, tags=["Items"])
-def create_item(
-    item_in: schemas.ItemCreate,
+@app.delete("/bookings/{booking_id}")
+def delete_booking(
+    booking_id: int,
     db: Session = Depends(get_db),
-    current_user: models.User = Depends(auth.get_current_user),
+    current_user=Depends(auth.get_current_user)
 ):
-    """Create an item owned by the current user."""
-    item = models.Item(**item_in.model_dump(), owner_id=current_user.id)
-    db.add(item)
-    db.commit()
-    db.refresh(item)
-    return item
 
-
-@app.get("/items", response_model=list[schemas.ItemOut], tags=["Items"])
-def list_items(
-    db: Session = Depends(get_db),
-    current_user: models.User = Depends(auth.get_current_user),
-):
-    """List all items belonging to the current user."""
-    return db.query(models.Item).filter(models.Item.owner_id == current_user.id).all()
-
-
-@app.delete("/items/{item_id}", tags=["Items"])
-def delete_item(
-    item_id: int,
-    db: Session = Depends(get_db),
-    current_user: models.User = Depends(auth.get_current_user),
-):
-    """Delete an item by ID (must be the owner)."""
-    item = db.query(models.Item).filter(
-        models.Item.id == item_id,
-        models.Item.owner_id == current_user.id,
+    booking = db.query(models.Booking).filter(
+        models.Booking.id == booking_id,
+        models.Booking.owner_id == current_user.id
     ).first()
-    if not item:
-        raise HTTPException(status_code=404, detail="Item not found")
-    db.delete(item)
+
+    if not booking:
+        raise HTTPException(404, "Booking not found")
+
+    db.delete(booking)
     db.commit()
-    return {"detail": "Item deleted"}
-from fastapi import FastAPI, Depends, HTTPException, status
-from fastapi.security import OAuth2PasswordRequestForm
-from sqlalchemy.orm import Session
-from datetime import timedelta
 
-import models
-import schemas
-import auth
-from database import engine, get_db
-
-# Create all tables on startup
-models.Base.metadata.create_all(bind=engine)
-
-app = FastAPI(
-    title="Deployment Teaching API",
-    description="A simple FastAPI app for learning deployment concepts.",
-    version="1.0.0",
-)
-
-
-# ── Health check ──────────────────────────────────────────────
-
-@app.get("/", tags=["Health"])
-def root():
-    return {"status": "ok", "message": "API is running!"}
-
-
-@app.get("/health", tags=["Health"])
-def health():
-    return {"status": "healthy"}
-
-
-# ── Auth routes ───────────────────────────────────────────────
-
-@app.post("/auth/register", response_model=schemas.UserOut, tags=["Auth"])
-def register(user_in: schemas.UserCreate, db: Session = Depends(get_db)):
-    """Register a new user."""
-    if db.query(models.User).filter(models.User.username == user_in.username).first():
-        raise HTTPException(status_code=400, detail="Username already taken")
-    if db.query(models.User).filter(models.User.email == user_in.email).first():
-        raise HTTPException(status_code=400, detail="Email already registered")
-
-    user = models.User(
-        username=user_in.username,
-        email=user_in.email,
-        hashed_password=auth.hash_password(user_in.password),
-    )
-    db.add(user)
-    db.commit()
-    db.refresh(user)
-    return user
-
-
-@app.post("/auth/login", response_model=schemas.Token, tags=["Auth"])
-def login(form: OAuth2PasswordRequestForm = Depends(), db: Session = Depends(get_db)):
-    """Login and receive a JWT access token."""
-    user = db.query(models.User).filter(models.User.username == form.username).first()
-    if not user or not auth.verify_password(form.password, user.hashed_password):
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Invalid username or password",
-        )
-    token = auth.create_access_token(
-        data={"sub": user.username},
-        expires_delta=timedelta(minutes=auth.ACCESS_TOKEN_EXPIRE_MINUTES),
-    )
-    return {"access_token": token, "token_type": "bearer"}
-
-
-# ── User routes ───────────────────────────────────────────────
-
-@app.get("/users/me", response_model=schemas.UserOut, tags=["Users"])
-def get_me(current_user: models.User = Depends(auth.get_current_user)):
-    """Get the currently authenticated user."""
-    return current_user
-
-
-# ── Item routes ───────────────────────────────────────────────
-
-@app.post("/items", response_model=schemas.ItemOut, tags=["Items"])
-def create_item(
-    item_in: schemas.ItemCreate,
-    db: Session = Depends(get_db),
-    current_user: models.User = Depends(auth.get_current_user),
-):
-    """Create an item owned by the current user."""
-    item = models.Item(**item_in.model_dump(), owner_id=current_user.id)
-    db.add(item)
-    db.commit()
-    db.refresh(item)
-    return item
-
-
-@app.get("/items", response_model=list[schemas.ItemOut], tags=["Items"])
-def list_items(
-    db: Session = Depends(get_db),
-    current_user: models.User = Depends(auth.get_current_user),
-):
-    """List all items belonging to the current user."""
-    return db.query(models.Item).filter(models.Item.owner_id == current_user.id).all()
-
-
-@app.delete("/items/{item_id}", tags=["Items"])
-def delete_item(
-    item_id: int,
-    db: Session = Depends(get_db),
-    current_user: models.User = Depends(auth.get_current_user),
-):
-    """Delete an item by ID (must be the owner)."""
-    item = db.query(models.Item).filter(
-        models.Item.id == item_id,
-        models.Item.owner_id == current_user.id,
-    ).first()
-    if not item:
-        raise HTTPException(status_code=404, detail="Item not found")
-    db.delete(item)
-    db.commit()
-    return {"detail": "Item deleted"}
+    return {"message": "Booking deleted"}
